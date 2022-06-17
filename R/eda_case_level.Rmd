@@ -1,0 +1,63 @@
+
+```{r message=FALSE, warning=FALSE}
+rm(list=ls())
+library(tidyverse)
+library(DT)
+library(lubridate)
+library(readxl)
+
+data_names <- "../Data/COVID-19_Case_Surveillance_" %>%
+  str_c("Public_Use_Data_with_Geography.tsv") %>%
+  read_tsv(n_max = 1, show_col_types = FALSE) %>%
+  names()
+
+wa_df <- "../Data/WA.tsv" %>%
+  read_tsv(col_names = data_names, show_col_types = FALSE) %>%
+  mutate(Month = ymd(str_c(case_month, "-01"))) %>%
+  filter(res_state == "WA")
+
+wa_state_df <- "../Data/EpiCurve_Count_Cases_Hospitalizations_Deaths.xlsx" %>%
+  read_excel(sheet = 3) %>%
+  mutate(Month = round_date(`Earliest Specimen Collection Date`, "month")) %>%
+  mutate(Month = as_date(Month)) %>%
+  filter(County == "Statewide") %>%
+  group_by(Month) %>%
+  summarise(Deaths = sum(Deaths))
+
+```
+
+Case numbers look right, we have about 1,482,239 observations and NYT reports 1,527,939 total cases for WA state.
+
+```{r}
+wa_df %>%
+  str()
+```
+
+Deaths are way underestimated as WA state official count has 12,820.
+
+```{r}
+table(wa_df$death_yn)
+```
+
+Monthly patterns look similar
+
+```{r}
+wa_df %>%
+  filter(death_yn == "Yes") %>%
+  group_by(Month) %>%
+  summarize(Deaths = n(), .groups = "drop") %>%
+  mutate(Source = "CDC") %>%
+  bind_rows(mutate(wa_state_df, Source = "WA State")) %>%
+  ggplot(aes(x = Month, y = Deaths, fill = Source)) +
+  geom_col(position = "dodge")
+```
+
+Looking at deaths of individuals we seem to be missing alot of race ethnicity
+
+```{r}
+wa_deaths_df <- wa_df %>%
+  filter(death_yn == "Yes") 
+
+table(wa_deaths_df$race)
+table(wa_deaths_df$ethnicity)
+```

@@ -1,0 +1,339 @@
+
+```{r message=FALSE, warning=FALSE}
+# CHAPTER should be about descriptive work
+# look into literature about sex differences in covid reporting
+# look at race review again
+# data limitations in terms of groups
+# detailed racial and ethnic groups
+# under reporting
+# change the population distribution of WA to match OR
+# look for data for just one state that has race age sex ethnicity 
+# 85+ version
+# look at the temporal difference in exposure especially in working age pop
+# structural exposure when we break down population cells
+# email person to see if someone has finished book chapter
+
+rm(list=ls())
+library(tidyverse)
+library(DT)
+library(lubridate)
+library(readxl)
+library(tidycensus)
+library(ggrepel)
+
+if(!file.exists("../Data/epi_df.rds")){
+    age_groups <- c(
+        "Under 1 year",  "1-4 years", "5-14 years", "15-24 years",
+        "25-34 years",  "35-44 years", "45-54 years", "55-64 years",
+        "65-74 years", "75-84 years", "85 years and over"
+    )
+    
+    age_groups_order <- c("Under 5 years", age_groups[-(1:2)])
+    
+    age_var_df <- load_variables(2019, "acs5") %>%
+        filter(str_starts(name, "B01001")) %>%
+        filter(!str_starts(name, "B01001_")) %>%
+        filter(!str_ends(name, "_001|_002|_017")) %>%
+        mutate(AgeGr = str_split_fixed(label, "!!", 4)[,4]) %>%
+        select(variable = name, AgeGr) %>%
+        mutate(Age = case_when(
+            AgeGr == "Under 5 years" ~ "Under 5 years",
+            AgeGr == "5 to 9 years" ~ "5-14 years",
+            AgeGr == "10 to 14 years" ~ "5-14 years",
+            AgeGr == "15 to 17 years" ~ "15-24 years",
+            AgeGr == "18 and 19 years" ~ "15-24 years",
+            AgeGr == "20 to 24 years" ~ "15-24 years",
+            AgeGr == "25 to 29 years"  ~ "25-34 years",
+            AgeGr == "30 to 34 years" ~ "25-34 years",
+            AgeGr == "35 to 44 years" ~ "35-44 years",
+            AgeGr == "45 to 54 years" ~ "45-54 years",
+            AgeGr == "55 to 64 years" ~ "55-64 years",
+            AgeGr == "65 to 74 years" ~ "65-74 years",
+            AgeGr == "75 to 84 years"  ~ "75-84 years",
+            AgeGr == "85 years and over"  ~ "85 years and over"
+        )) %>%
+        mutate(Age = factor(Age, age_groups_order))
+    
+    nat_df <- "../Data/Provisional_COVID-19_Deaths_by_" %>% 
+        str_c("Race_and_Hispanic_Origin__and_Age.csv") %>%
+        read_csv(col_types = cols()) %>%
+        filter(`Race and Hispanic Origin Group` != "Total Deaths") %>%
+        filter(`Age group` %in% age_groups & State != "United States") %>%
+        select(
+            `End Date`, State, 
+            Age = `Age group`, Race = `Race and Hispanic Origin Group`,
+            COVID = `COVID-19 Deaths`, 
+            PI_COVID = `Pneumonia and COVID-19 Deaths`) %>%
+        mutate(Age = if_else(
+            Age %in% c("Under 1 year",  "1-4 years"), "Under 5 years", Age)) %>%
+        mutate(Age = factor(Age, age_groups_order)) %>%
+        mutate(across(COVID:PI_COVID, function(x)if_else(is.na(x), 0, x))) %>%
+        group_by(`End Date`, State, Age, Race) %>%
+        summarise(across(everything(), sum), .groups = "drop")
+    
+    pop_data_raw <- bind_rows(
+        get_acs("state", table = "B01001H", year = 2020) %>%
+            mutate(Race = "Non-Hispanic White"),
+        
+        get_acs("state", table = "B01001I", year = 2020) %>%
+            mutate(Race = "Hispanic"),
+        
+        get_acs("state", table = "B01001B", year = 2020) %>%
+            mutate(Race = "Non-Hispanic Black"),
+        
+        get_acs("state", table = "B01001C", year = 2020) %>%
+            mutate(Race = "Non-Hispanic American Indian or Alaska Native"),
+        
+        get_acs("state", table = "B01001D", year = 2020) %>%
+            mutate(Race = "Non-Hispanic Asian"),
+        
+        get_acs("state", table = "B01001E", year = 2020) %>%
+            mutate(
+                Race = 
+                    "Non-Hispanic Native Hawaiian or Other Pacific Islander"),
+        
+        get_acs("state", table = "B01001G", year = 2020) %>%
+            mutate(Race = "Non-Hispanic More than one race"))
+    
+    epi_df <- pop_data_raw %>%
+        left_join(age_var_df, by = "variable") %>%
+        filter(!is.na(Age)) %>%
+        rename(State = NAME) %>%
+        group_by(State, Race, Age) %>%
+        summarize(Population = sum(estimate), .groups = "drop") %>%
+        right_join(nat_df, by = c("State", "Race", "Age"))
+    
+    write_rds(epi_df, "../Data/epi_df.rds")
+}
+
+epi_df <- read_rds("../Data/epi_df.rds") %>%
+    filter(Race != "Unknown") %>%
+    filter(State != "New York City" & State != "Puerto Rico") %>%
+    mutate(Race = case_when(
+        Race == "Non-Hispanic American Indian or Alaska Native"  ~ "AIAN",
+        Race == "Non-Hispanic Asian" ~ "Asian",
+        Race == "Non-Hispanic Black" ~ "Black",
+        Race == "Non-Hispanic More than one race" ~ "2+ Races",
+        Race == "Non-Hispanic Native Hawaiian or Other Pacific Islander" ~
+            "NHOPI",
+        Race == "Non-Hispanic White" ~ "White",
+        TRUE ~ Race
+    ))
+
+```
+
+Case numbers look right, we have about 1,482,239 observations and NYT reports 1,527,939 total cases for WA state.
+
+```{r}
+
+translate_state <- function(x, reverse = FALSE){
+    state_vec <- c(datasets::state.name, "District of Columbia")
+    names(state_vec) <- c(datasets::state.abb, "DC")
+
+    if(reverse){
+        state_vec <- c(datasets::state.abb, "DC")
+        names(state_vec) <- c(datasets::state.name, "District of Columbia")
+    }
+
+    state_vec[x]
+}
+
+focus_states <- c("Washington", "Oregon", "Pennsylvania", "New York")
+
+focus_groups <- c(
+    "Hispanic", "Non-Hispanic Asian", "Non-Hispanic Black", "Non-Hispanic White"
+    )
+
+focus_df <- epi_df %>%
+    filter(State %in% focus_states)
+
+agg_df <- epi_df %>%
+    group_by(State) %>%
+    summarise(
+        plus65 = sum((as.numeric(Age) >= 10)*Population)/sum(Population),
+        Population = sum(Population), 
+        COVID = sum(COVID),
+        PI_COVID = sum(PI_COVID),
+        .groups = "drop"
+        ) %>%
+    mutate(CCMR = COVID/Population*100000) %>%
+    mutate(CPICMR = PI_COVID/Population*100000)
+    
+
+```
+
+Do populations generally look alright?
+
+```{r}
+
+agg_df %>%
+    mutate(Name = translate_state(State, reverse = TRUE)) %>%
+    mutate(Name = fct_reorder(Name, Population)) %>%
+    ggplot(aes(x = Name, y = Population/1000000)) +
+    geom_col() +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 90)) +
+    labs(x="State", y = "Population\n(in millions)")
+
+```
+
+Age of populations
+```{r}
+agg_df %>%
+    mutate(Name = translate_state(State, reverse = TRUE)) %>%
+    mutate(Name = fct_reorder(Name, plus65)) %>%
+    ggplot(aes(x = Name, y = plus65)) +
+    geom_col() +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 90)) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(x="State", y = "Population\nAge 65+")
+```
+
+How does age correlate with crude covid death rate
+
+```{r}
+agg_df %>%
+    mutate(Name = translate_state(State, reverse = TRUE)) %>%
+    ggplot(aes(x = plus65, y = CCMR, label = Name)) +
+    geom_point() +
+    geom_smooth(method = 'lm', formula = 'y ~ x') +
+    geom_text_repel() +
+    theme_classic() +
+    scale_x_continuous(labels = scales::percent) +
+    labs(x = "Population\nAge 65+", y = "Crude COVID\nMortalityRate")
+```
+
+```{r}
+focus_agg_df <- focus_df %>%
+    group_by(State, Race) %>%
+    summarise(
+        plus65 = sum((as.numeric(Age) >= 8)*Population)/sum(Population),
+        Population = sum(Population), 
+        COVID = sum(COVID),
+        PI_COVID = sum(PI_COVID),
+        .groups = "drop"
+        ) %>%
+    mutate(CCMR = COVID/Population*100000) %>%
+    mutate(CPICMR = PI_COVID/Population*100000)
+
+focus_agg_df %>%
+    ggplot(aes(x = Race, y = Population/1000000)) +
+    geom_col() +
+    facet_wrap(~State) +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 90)) +
+    labs(y = "Population\n(in millions)", x = "Race Ethnicity")
+
+```
+
+```{r}
+focus_agg_df %>%
+    ggplot(aes(x = Race, y = plus65)) +
+    geom_col() +
+    facet_wrap(~State) +
+    theme_classic() +
+    scale_y_continuous(labels = scales::percent) +
+    theme(axis.text.x = element_text(angle = 90)) +
+    labs(y = "Population\nAge 65+", x = "Race Ethnicity")
+```
+
+
+
+
+```{r}
+weight_df <- epi_df %>%
+    group_by(Age) %>%
+    summarise(P = sum(Population), .groups = "drop") %>%
+    mutate(P = P/sum(P))
+
+epi_df %>%
+    group_by(Race, Age) %>%
+    summarise(
+        COVID = sum(COVID),
+        Population = sum(Population),
+        .groups = "drop") %>%
+    left_join(weight_df, by = "Age") %>%
+    mutate(CR = COVID/Population) %>%
+    group_by(Race) %>%
+    summarise(MR = sum(CR*P)*100000, .groups = "drop") %>%
+    mutate(Label = "Standardized\nRate") %>%
+    bind_rows(
+        epi_df %>%
+            group_by(Race, Age) %>%
+            summarise(
+                COVID = sum(COVID),
+                Population = sum(Population),
+                .groups = "drop") %>%
+            group_by(Race) %>%
+            summarise(
+                MR = sum(COVID)/sum(Population)*100000, .groups = "drop") %>%
+            mutate(Label = "Crude\nRate")
+    ) %>%
+    ggplot(aes(x = Race, y = MR)) +
+    geom_col() +
+    facet_wrap(~Label) +
+    labs(y = "COVID Mortality Rate", x = "Race Ethnicity")
+```
+
+```{r}
+epi_df %>%
+    mutate(AgeG = case_when(
+        as.numeric(Age) <=3 ~ "0-24",
+        as.numeric(Age) <=5 ~ "25-44",
+        as.numeric(Age) <=7 ~ "45-64",
+        TRUE ~ "65+",
+    )) %>%
+    group_by(Race, AgeG) %>%
+    summarise(MR = sum(COVID)/sum(Population)*100000, .groups = "drop") %>%
+    ggplot(aes(x = Race, y = MR)) +
+    geom_col() +
+    facet_wrap(AgeG~., scales = "free_y") +
+    labs(y = "COVID Mortality Rate", x = "Race Ethnicity") +
+    theme(axis.text.x = element_text(angle = 90))
+```
+
+```{r}
+focus_df %>%
+    left_join(weight_df, by = "Age") %>%
+    mutate(CR = COVID/Population) %>%
+    group_by(State, Race) %>%
+    summarise(MR = sum(CR*P)*100000, .groups = "drop") %>%
+    mutate(Label = "Standardized\nRate") %>%
+    bind_rows(
+        focus_df %>%
+            group_by(State, Race) %>%
+            summarise(
+                MR = sum(COVID)/sum(Population)*100000, .groups = "drop") %>%
+            mutate(Label = "Crude\nRate")
+    ) %>%
+    ggplot(aes(x = Race, y = MR)) +
+    geom_col() +
+    facet_grid(State~Label) +
+    labs(y = "COVID Mortality Rate", x = "Race Ethnicity")
+
+```
+
+```{r}
+focus_df %>%
+    mutate(AgeG = case_when(
+        as.numeric(Age) <=3 ~ "0-24",
+        as.numeric(Age) <=5 ~ "25-44",
+        as.numeric(Age) <=7 ~ "45-64",
+        TRUE ~ "65+",
+    )) %>%
+    group_by(State, Race, AgeG) %>%
+    summarise(MR = sum(COVID)/sum(Population)*100000, .groups = "drop") %>%
+    ggplot(aes(x = Race, y = MR)) +
+    geom_col() +
+    facet_grid(AgeG~State, scales = "free_y") +
+    labs(y = "COVID Mortality Rate", x = "Race Ethnicity") +
+    theme(axis.text.x = element_text(angle = 90))
+
+
+```
+
+```{r}
+focus_df %>%
+    filter(State == "Washington" & Race == "NHOPI")
+```

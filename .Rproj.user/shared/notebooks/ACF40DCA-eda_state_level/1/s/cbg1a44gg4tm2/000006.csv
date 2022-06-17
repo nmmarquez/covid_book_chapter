@@ -1,0 +1,8 @@
+"0","focus_agg_df %>%"
+"0","    ggplot(aes(x = Race, y = plus65)) +"
+"0","    geom_col() +"
+"0","    facet_wrap(~State) +"
+"0","    theme_classic() +"
+"0","    scale_y_continuous(labels = scales::percent) +"
+"0","    theme(axis.text.x = element_text(angle = 90)) +"
+"0","    labs(y = ""Population\nAge 65+"", x = ""Race Ethnicity"")"
